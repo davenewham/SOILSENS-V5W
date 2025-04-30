@@ -256,38 +256,30 @@ void setupSensorConfig() {
 ////////////// WiFi Connection Functions ////////////
 
 // Fast-WIFI mode: Uses static IP, MAC, channel, etc.
-void setup_wifi() {
+bool setup_wifi() {
   IPAddress localIP, gatewayIP, subnetMask;
-  if (!localIP.fromString(wifi_local_ip) ||
-      !gatewayIP.fromString(gateway) ||
-      !subnetMask.fromString(subnet)) {
-    Serial.println("Invalid IP configuration");
-    return;
-  }
+
   if (!WiFi.config(localIP, gatewayIP, subnetMask)) {
     Serial.println("Failed to configure static IP");
     return;
   }
   WiFi.mode(WIFI_STA);
   uint8_t bssid[6];
-  if (sscanf(mac_address.c_str(), "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
-             &bssid[0], &bssid[1], &bssid[2],
-             &bssid[3], &bssid[4], &bssid[5]) != 6) {
-    Serial.println("Invalid MAC address format");
-    return;
-  }
   WiFi.begin(wifi_ssid.c_str(), wifi_password.c_str(), wifi_channel, bssid, true);
-  uint32_t timeout = millis() + 5000;
+  uint32_t timeout = millis() + 3000;
+
   while (WiFi.status() != WL_CONNECTED && millis() < timeout) {
     delay(100);
-    Serial.print(".");
   }
+
   if (WiFi.status() == WL_CONNECTED) {
     Serial.println("\nWi-Fi connected (Fast-WIFI)");
     Serial.print("IP Address: ");
     Serial.println(WiFi.localIP());
+    return true;
   } else {
     Serial.println("\nFailed to connect to Fast-WIFI");
+    return false;
   }
 }
 
@@ -309,8 +301,12 @@ void basic_setup_wifi() {
   }
 }
 
-void reconnect() {
-  while (!client.connected()) {
+bool reconnect() {
+  const int maxAttempts = 2;
+  int attempt = 0;
+
+  while (!client.connected() && attempt < maxAttempts) {
+    attempt++;
     Serial.print("Attempting MQTT connection...");
     if (client.setBufferSize(1024)) {
       Serial.println("Buffer Size increased to 1024 byte");
@@ -322,13 +318,15 @@ void reconnect() {
       Serial.println("MQTT connected");
       Serial.println("Buffersize: " + client.getBufferSize());
       mqttautodiscovery();
+      return true;
     } else {
       Serial.print("MQTT failed, rc=");
       Serial.print(client.state());
-      Serial.println(" try again in 1 seconds");
-      delay(1000);
+      Serial.println(" try again in 1/2 second");
+      delay(500);
     }
   }
+  return false;
 }
 
 int getAverageSoilMoisture() {
@@ -414,9 +412,15 @@ void setup() {
         esp_now_register_send_cb(OnDataSent);
     } else if (config_mode == 0) {
         // Fast-WIFI mode
-        setup_wifi();
+        if (!setup_wifi()){
+            // Unable to connect to wifi within timeout. Let's assume the network is unavailable and go immediately back to sleep
+            toggleDonePin();
+        }
         client.setServer(mqtt_server.c_str(), mqtt_port);
-        reconnect();
+        if (!reconnect()){
+            // Unable to connect to mqtt within timeout. Let's assume service is unavailable and go immediately back to sleep
+            toggleDonePin();
+        }
     } else if (config_mode == 2) {
         // Basic-WIFI mode
         basic_setup_wifi();
