@@ -685,13 +685,10 @@ void loop() {
             publishmqtt();
             mqttPublished = true;
             toggleStartTime = millis();
+            toggleDonePin();
         } else if (!client.connected()) {
-            reconnect();
-        }
-        client.loop();
-        if (millis() - toggleStartTime >= 500 && mqttPublished) {
             toggleDonePin();
         }
     }
-    client.loop();
+    delay(10);
 }
