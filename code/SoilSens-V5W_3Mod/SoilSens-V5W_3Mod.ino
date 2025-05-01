@@ -1,4 +1,3 @@
-#include <esp_now.h>
 #include <WiFi.h>
 #include "driver/adc.h"
 #include "esp_adc_cal.h"
@@ -47,7 +46,6 @@ unsigned int mqtt_port;
 String mqtt_username;
 String mqtt_password;
 unsigned int wifi_channel;
-unsigned int config_mode; // 1: ESP-NOW, 0: Fast-WIFI, 2: Basic-WIFI
 
 StaticJsonDocument<256> doc;
 
@@ -102,21 +100,10 @@ void setupSensorConfig() {
     </style>
     <script>
         function toggleFields() {
-            var mode = document.querySelector('input[name="mode"]:checked').value;
-            // For ESP-NOW, hide all WiFi-related fields.
-            if (mode === '1') {
-                document.getElementById('commonWifiFields').style.display = 'none';
-                document.getElementById('wifiAdvancedFields').style.display = 'none';
-                document.getElementById('mqttFields').style.display = 'none';
-            } else if (mode === '0') { // Fast-WIFI: show common + advanced and mqtt fields
-                document.getElementById('commonWifiFields').style.display = 'block';
-                document.getElementById('wifiAdvancedFields').style.display = 'block';
-                document.getElementById('mqttFields').style.display = 'block';
-            } else if (mode === '2') { // Basic-WIFI: show common fields and mqtt fields only
-                document.getElementById('commonWifiFields').style.display = 'block';
-                document.getElementById('wifiAdvancedFields').style.display = 'none';
-                document.getElementById('mqttFields').style.display = 'block';
-            }
+            // Fast-WIFI: show common + advanced and mqtt fields
+            document.getElementById('commonWifiFields').style.display = 'block';
+            document.getElementById('wifiAdvancedFields').style.display = 'block';
+            document.getElementById('mqttFields').style.display = 'block';
         }
         window.onload = function() {
             toggleFields();
@@ -283,24 +270,6 @@ bool setup_wifi() {
   }
 }
 
-// Basic-WIFI mode: Only SSID and password are used.
-void basic_setup_wifi() {
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(wifi_ssid.c_str(), wifi_password.c_str());
-  uint32_t timeout = millis() + 5000;
-  while (WiFi.status() != WL_CONNECTED && millis() < timeout) {
-    delay(100);
-    Serial.print(".");
-  }
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("\nWi-Fi connected (Basic-WIFI)");
-    Serial.print("IP Address: ");
-    Serial.println(WiFi.localIP());
-  } else {
-    Serial.println("\nFailed to connect to Basic-WIFI");
-  }
-}
-
 bool reconnect() {
   const int maxAttempts = 2;
   int attempt = 0;
@@ -356,7 +325,6 @@ void setup() {
     wifi_password = preferences.getString("password", "password");
     node_name = preferences.getString("nodeName", "SoilSens-V5W");
     gateway_key = preferences.getString("gatewayKey", "xy");
-    config_mode = preferences.getUInt("mode", 1);
     mqtt_server = preferences.getString("mqttserver", "192.168.1.5");
     mqtt_port = preferences.getUInt("mqttport", 1883);
     mqtt_username = preferences.getString("mqttusername", "mqtt");
@@ -393,40 +361,17 @@ void setup() {
         }
     }
 
-    // Choose operating mode based on config_mode:
-    if (config_mode == 1) {
-        // ESP-NOW mode
-        WiFi.mode(WIFI_STA);
-        if (esp_now_init() != ESP_OK) {
-            Serial.println("Error initializing ESP-NOW");
-            return;
-        }
-        esp_now_peer_info_t peerInfo;
-        memcpy(peerInfo.peer_addr, receiverAddress, 6);
-        peerInfo.channel = 0;
-        peerInfo.encrypt = false;
-        if (esp_now_add_peer(&peerInfo) != ESP_OK) {
-            Serial.println("Failed to add peer");
-            return;
-        }
-        esp_now_register_send_cb(OnDataSent);
-    } else if (config_mode == 0) {
-        // Fast-WIFI mode
-        if (!setup_wifi()){
-            // Unable to connect to wifi within timeout. Let's assume the network is unavailable and go immediately back to sleep
-            toggleDonePin();
-        }
-        client.setServer(mqtt_server.c_str(), mqtt_port);
-        if (!reconnect()){
-            // Unable to connect to mqtt within timeout. Let's assume service is unavailable and go immediately back to sleep
-            toggleDonePin();
-        }
-    } else if (config_mode == 2) {
-        // Basic-WIFI mode
-        basic_setup_wifi();
-        client.setServer(mqtt_server.c_str(), mqtt_port);
-        reconnect();
+    // Fast-WIFI mode
+    if (!setup_wifi()){
+        // Unable to connect to wifi within timeout. Let's assume the network is unavailable and go immediately back to sleep
+        toggleDonePin();
     }
+    client.setServer(mqtt_server.c_str(), mqtt_port);
+    if (!reconnect()){
+        // Unable to connect to mqtt within timeout. Let's assume service is unavailable and go immediately back to sleep
+        toggleDonePin();
+    }
+
 
     if (!sensor0.begin()) {
         Serial.println("TMP102 not detected.");
@@ -453,10 +398,6 @@ void setup() {
     soilMoistureRow = getAverageSoilMoisture();
     int mpercent = map(soilMoistureRow, drySoilValue, wetSoilValue, 0, 100);
     soilMpercent = constrain(mpercent, 0, 100);
-}
-
-void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
-    toggleDonePin();
 }
 
 void calibrateSoilMoistureSensor() {
@@ -502,21 +443,6 @@ void toggleDonePin() {
 }
 
 ////////////////////////// HOTSPOT END ///////////////////////////////////
-
-void modeESPNOW() {
-    doc.clear();
-    doc["k"] = gateway_key;
-    doc["id"] = node_name;
-    doc["b"] = int(batteryPercentage);
-    doc["l"] = int(light);
-    doc["mo"] = int(soilMpercent);
-    doc["t"] = int(aht20.getTemperature());
-    doc["hu"] = int(aht20.getHumidity());
-    doc["t2"] = int(sensor0.readTempC());
-    doc["rw"] = int(getAverageSoilMoisture());
-    size_t jsonSize = serializeJson(doc, myData.json, sizeof(myData.json));
-    esp_now_send(receiverAddress, (uint8_t *) &myData, jsonSize + 1);
-}
 
 void mqttautodiscovery() {
 
@@ -669,26 +595,18 @@ unsigned long toggleStartTime = 0;
 bool mqttPublished = false;
 
 void loop() {
-    if (config_mode == 1) {
-        // ESP-NOW mode
-        modeESPNOW();
-    } else {
-        // For both Fast-WIFI and Basic-WIFI modes, ensure WiFi is connected:
-        if (WiFi.status() != WL_CONNECTED) {
-            if (config_mode == 0) {
-                setup_wifi();
-            } else if (config_mode == 2) {
-                basic_setup_wifi();
-            }
-        }
-        if (client.connected() && !mqttPublished) {
-            publishmqtt();
-            mqttPublished = true;
-            toggleStartTime = millis();
-            toggleDonePin();
-        } else if (!client.connected()) {
-            toggleDonePin();
-        }
+    // For both Fast-WIFI and Basic-WIFI modes, ensure WiFi is connected:
+    if (WiFi.status() != WL_CONNECTED) {
+        setup_wifi();
+    }
+
+    if (client.connected() && !mqttPublished) {
+        publishmqtt();
+        mqttPublished = true;
+        toggleStartTime = millis();
+        toggleDonePin();
+    } else if (!client.connected()) {
+        toggleDonePin();
     }
     delay(10);
 }
